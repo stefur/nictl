@@ -1,0 +1,17 @@
+[project]
+name = "nictl"
+version = "0.1.0"
+description = "Some controls for niri."
+readme = "README.md"
+authors = [
+    { name = "Stefan Furne", email = "stefan@furne.net" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+nictl = "nictl:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
