@@ -41,14 +41,17 @@ def send_command(cmd: str | dict) -> dict:
 
 def spawn_or_focus(app_id: str, cmd: str) -> None:
     """Check if the app is already running, then focus it, otherwise run the supplied command."""
-    focused_window = send_command("FocusedWindow")["app_id"]
+
+    focused_window = send_command("FocusedWindow")
+    focused_window_app_id = focused_window.get("app_id") if focused_window else None
+
     windows = send_command("Windows")
 
     window_id = [
         window["id"] for window in windows if window["app_id"].lower() in app_id.lower()
     ]
     if window_id:
-        if focused_window == app_id:
+        if focused_window_app_id == app_id:
             send_command({"Action": {"FocusWindowPrevious": {}}})
         else:
             send_command({"Action": {"FocusWindow": {"id": window_id[0]}}})
