@@ -21,14 +21,16 @@ def send_command(cmd: str | dict) -> dict:
 
         client.sendall(msg)
 
-        chunks = []
+        buffer = bytearray()
 
-        while chunk := client.recv(1024):
-            chunks.append(chunk)
+        while not buffer.endswith(b"\n"):
+            if chunk := client.recv(1024):
+                buffer.extend(chunk)
+            else:
+                # For any unexpected behaviour
+                break
 
-        response = b"".join(chunks).decode("utf-8")
-
-        json_response = json.loads(response)
+        json_response = json.loads(buffer)
 
         # All responses are returned "Ok" or "Err", try to unpack the response
         if ok_result := json_response.get("Ok"):
