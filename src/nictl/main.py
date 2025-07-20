@@ -62,16 +62,23 @@ def spawn_or_focus(app_id: str, cmd: str) -> None:
         send_command({"Action": {"Spawn": {"command": cmd.split()}}})
 
 
-def cycle_workspace(direction: Literal["up", "down"]) -> None:
+def occupied_workspaces() -> list[int]:
+    windows = send_command("Windows")
+    windows_workspace_id = list(set([window.get("workspace_id") for window in windows]))
+    workspaces = send_command("Workspaces")
+    return sorted([ws["idx"] for ws in workspaces if ws["id"] in windows_workspace_id])
+
+
+def cycle_workspace(direction: Literal["up", "down"], skip_next_empty: bool) -> None:
     focused_output = send_command("FocusedOutput")["name"]
 
     workspaces = send_command("Workspaces")
 
-    current_workspace = [
+    current_workspace = next(
         workspace["idx"]
         for workspace in workspaces
-        if workspace["output"] == focused_output and workspace["is_active"] is True
-    ][0]
+        if workspace["output"] == focused_output and workspace["is_active"]
+    )
 
     max_workspace = max(
         [
@@ -81,16 +88,35 @@ def cycle_workspace(direction: Literal["up", "down"]) -> None:
         ]
     )
 
+    occupied = occupied_workspaces() if skip_next_empty else None
+
+    def next_workspace(current: int, step: int) -> int:
+        if occupied is None or current in occupied:
+            target = current + step
+        elif (current + step) not in occupied:
+            # Find nearest occupied workspace to target
+            target = (
+                min([w for w in occupied if w > current], default=occupied[0])
+                if step > 0
+                else max([w for w in occupied if w < current], default=occupied[-1])
+            )
+        else:
+            target = current + step
+
+        # Do the wrap around to first/last
+        if target < 1:
+            target = max_workspace
+        elif target > max_workspace:
+            target = 1
+
+        return target
+
     match direction:
         case "down":
-            # If at max workspace, wrap to 1
-            new_workspace = (
-                1 if current_workspace == max_workspace else current_workspace + 1
-            )
+            new_workspace = next_workspace(current_workspace, 1)
+
         case "up":
-            new_workspace = (
-                max_workspace if current_workspace == 1 else current_workspace - 1
-            )
+            new_workspace = next_workspace(current_workspace, -1)
 
     send_command(
         {"Action": {"FocusWorkspace": {"reference": {"Index": new_workspace}}}}
@@ -129,6 +155,11 @@ def main():
         type=str,
         help="The direction to move (up/down).",
     )
+    parser_cycle_workspace.add_argument(
+        "--skip-next-empty",
+        action="store_true",
+        help="Skip next workspace if both next and  current workspace is empty.",
+    )
 
     args = parser.parse_args(args=(sys.argv[1:] or ["--help"]))
 
@@ -136,4 +167,4 @@ def main():
         case "spawn-or-focus":
             spawn_or_focus(args.app_id, args.cmd)
         case "cycle-workspace":
-            cycle_workspace(args.direction)
+            cycle_workspace(args.direction, args.skip_next_empty)
