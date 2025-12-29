@@ -2,18 +2,50 @@ import argparse
 import json
 import os
 import sys
+from contextlib import contextmanager
 from socket import AF_UNIX, SOCK_STREAM, socket
-from typing import Literal
+from typing import Iterator, Literal
 
 
-def send_command(cmd: str | dict) -> dict:
-    """Send the command over the socket and returns the JSON response"""
+@contextmanager
+def niri_socket_connection() -> Iterator[socket]:
+    """Connect to the niri socket."""
+
     if not (address := os.environ.get("NIRI_SOCKET")):
         raise Exception("Could not find socket address. Is niri running?")
 
     with socket(AF_UNIX, SOCK_STREAM) as client:
         client.connect(address)
+        yield client
 
+
+def read_lines(client: socket) -> Iterator[bytearray]:
+    """Read from niri socket until newline."""
+    buffer = bytearray()
+    while not buffer.endswith(b"\n"):
+        if chunk := client.recv(1024):
+            buffer.extend(chunk)
+        else:
+            break
+
+        *complete, buffer = buffer.split(b"\n")
+        for line in complete:
+            if line:
+                yield line
+
+
+@contextmanager
+def event_stream() -> Iterator[dict]:
+    """Getting the event stream from niri"""
+    with niri_socket_connection() as client:
+        client.sendall(b'"EventStream"\n')
+        yield (json.loads(line) for line in read_lines(client))
+
+
+def send_command(cmd: str | dict) -> dict:
+    """Send the command over the socket and return the response"""
+
+    with niri_socket_connection() as client:
         if isinstance(cmd, str):
             msg = f'"{cmd}"\n'.encode("utf-8")
         elif isinstance(cmd, dict):
@@ -21,16 +53,10 @@ def send_command(cmd: str | dict) -> dict:
 
         client.sendall(msg)
 
-        buffer = bytearray()
+        # Expecting a single line in return
+        response = next(read_lines(client))
 
-        while not buffer.endswith(b"\n"):
-            if chunk := client.recv(1024):
-                buffer.extend(chunk)
-            else:
-                # For any unexpected behaviour
-                break
-
-        json_response = json.loads(buffer)
+        json_response = json.loads(response)
 
         # All responses are returned "Ok" or "Err", try to unpack the response
         if ok_result := json_response.get("Ok"):
@@ -69,7 +95,7 @@ def occupied_workspaces() -> list[int]:
     return sorted([ws["idx"] for ws in workspaces if ws["id"] in windows_workspace_id])
 
 
-def cycle_workspace(direction: Literal["up", "down"], skip_next_empty: bool) -> None:
+def focused_workspace() -> int:
     focused_output = send_command("FocusedOutput")["name"]
 
     workspaces = send_command("Workspaces")
@@ -79,6 +105,16 @@ def cycle_workspace(direction: Literal["up", "down"], skip_next_empty: bool) -> 
         for workspace in workspaces
         if workspace["output"] == focused_output and workspace["is_active"]
     )
+
+    return current_workspace
+
+
+def cycle_workspace(direction: Literal["up", "down"], skip_next_empty: bool) -> None:
+    focused_output = send_command("FocusedOutput")["name"]
+
+    workspaces = send_command("Workspaces")
+
+    current_workspace = focused_workspace()
 
     max_workspace = max(
         [
@@ -123,6 +159,107 @@ def cycle_workspace(direction: Literal["up", "down"], skip_next_empty: bool) -> 
     )
 
 
+def calculate_pixel_widths(usable_width: int, n_columns: int) -> list[int]:
+    base = usable_width // n_columns
+    remainder = usable_width % n_columns
+
+    # Give each window the base, distribute remainder to first N windows in columns
+    return [base + (1 if i < remainder else 0) for i in range(n_columns)]
+
+
+def fit_all_windows(gaps: int) -> None:
+    output_width = send_command("FocusedOutput")["logical"]["width"]
+
+    current_workspace = focused_workspace()
+    windows = send_command("Windows")
+
+    focused_window_id = send_command("FocusedWindow")["id"]
+
+    # The windows on the current workspace, sorted in the order
+    windows_on_current_workspace = sorted(
+        [window for window in windows if window["workspace_id"] == current_workspace],
+        key=lambda x: x["layout"]["pos_in_scrolling_layout"],
+    )
+
+    # Get the number of columns on the workspace, this is what we split the width on
+    n_columns = len(
+        {
+            window["layout"]["pos_in_scrolling_layout"][0]
+            for window in windows_on_current_workspace
+        }
+    )
+
+    # Calculate the usable width based on the gaps
+    usable_width = output_width - (gaps * (n_columns + 1))
+
+    # The window widths to use based on the number of columns on the workspace and the usable width
+    widths = calculate_pixel_widths(usable_width, n_columns)
+
+    # Keep track of the window ids that are actually resized
+    resized_window_ids = set()
+
+    for window, width in zip(windows_on_current_workspace, widths):
+        current_width = window["layout"]["window_size"][0]
+
+        # If this window is already at the expected width we pass it
+        if current_width == width:
+            continue
+
+        # Else adjust the width
+        send_command(
+            {
+                "Action": {
+                    "SetWindowWidth": {
+                        "id": window["id"],
+                        "change": {"SetFixed": width},
+                    }
+                }
+            }
+        )
+
+        # All resized windows go to the set
+        resized_window_ids.add(window["id"])
+
+    with event_stream() as events:
+        # Now check the event streams for all layout changes, this is to make sure niri has finished handling our requests before we finish up
+        seen = set()
+        for event in events:
+            # If we have not performed any resizes, just bail
+            if not resized_window_ids:
+                break
+            # We want to check for when layout is changed for our windows
+            if "WindowLayoutsChanged" in event:
+                for window_id, _ in event["WindowLayoutsChanged"]["changes"]:
+                    if window_id in resized_window_ids:
+                        seen.add(window_id)
+                # When we've seen all expected window ID events we are finished
+                if seen == resized_window_ids:
+                    break
+
+    # A second pass after all windows are adjusted to ensure they are all visible
+    for window in windows_on_current_workspace:
+        send_command(
+            {
+                "Action": {
+                    "FocusWindow": {
+                        "id": window["id"],
+                    }
+                }
+            }
+        )
+
+    # Then go back to the originally focused window
+    send_command(
+        {
+            "Action": {
+                "FocusWindow": {
+                    "id": focused_window_id,
+                }
+            }
+        }
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Send commands to niri over its socket."
@@ -161,6 +298,18 @@ def main():
         help="Skip next workspace if both next and  current workspace is empty.",
     )
 
+    # Fit all windows
+    parser_fit_all_windows = sub_parsers.add_parser(
+        "fit-all-windows",
+        help="Resize all windows' widths on the current worksapce so that they all fit on the screen.",
+    )
+
+    parser_fit_all_windows.add_argument(
+        "gaps",
+        type=int,
+        help="The gaps from the niri config so that the window sizes are correctly adjusted.",
+    )
+
     args = parser.parse_args(args=(sys.argv[1:] or ["--help"]))
 
     match args.command:
@@ -168,3 +317,5 @@ def main():
             spawn_or_focus(args.app_id, args.cmd)
         case "cycle-workspace":
             cycle_workspace(args.direction, args.skip_next_empty)
+        case "fit-all-windows":
+            fit_all_windows(args.gaps)
