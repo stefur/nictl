@@ -4,7 +4,7 @@ import os
 import sys
 from contextlib import contextmanager
 from socket import AF_UNIX, SOCK_STREAM, socket
-from typing import Iterator, Literal
+from typing import Any, Iterator, Literal
 
 
 @contextmanager
@@ -170,26 +170,28 @@ def calculate_pixel_widths(usable_width: int, n_columns: int) -> list[int]:
     return [base + (1 if i < remainder else 0) for i in range(n_columns)]
 
 
-def fit_all_windows(gaps: int) -> None:
-    output_width = send_command("FocusedOutput")["logical"]["width"]
-
+def windows_on_current_workspace() -> list[dict[str, Any]]:
+    """Helper to get a position sorted list of windows on the current workspace"""
     current_workspace = focused_workspace()
     windows = send_command("Windows")
 
-    focused_window_id = send_command("FocusedWindow")["id"]
-
     # The windows on the current workspace, sorted in the order
-    windows_on_current_workspace = sorted(
+    return sorted(
         [window for window in windows if window["workspace_id"] == current_workspace],
         key=lambda x: x["layout"]["pos_in_scrolling_layout"],
     )
 
+
+def fit_all_windows(gaps: int) -> None:
+    output_width = send_command("FocusedOutput")["logical"]["width"]
+
+    windows = windows_on_current_workspace()
+
+    focused_window_id = send_command("FocusedWindow")["id"]
+
     # Get the number of columns on the workspace, this is what we split the width on
     n_columns = len(
-        {
-            window["layout"]["pos_in_scrolling_layout"][0]
-            for window in windows_on_current_workspace
-        }
+        {window["layout"]["pos_in_scrolling_layout"][0] for window in windows}
     )
 
     # Calculate the usable width based on the gaps
@@ -201,7 +203,7 @@ def fit_all_windows(gaps: int) -> None:
     # Keep track of the window ids that are actually resized
     resized_window_ids = set()
 
-    for window, width in zip(windows_on_current_workspace, widths):
+    for window, width in zip(windows, widths):
         current_width = window["layout"]["window_size"][0]
 
         # If this window is already at the expected width we pass it
@@ -240,7 +242,7 @@ def fit_all_windows(gaps: int) -> None:
                     break
 
     # A second pass after all windows are adjusted to ensure they are all visible
-    for window in windows_on_current_workspace:
+    for window in windows:
         send_command(
             {
                 "Action": {
@@ -261,6 +263,23 @@ def fit_all_windows(gaps: int) -> None:
             }
         }
     )
+
+
+def maximize_windows() -> None:
+    windows = windows_on_current_workspace()
+
+    for window in windows:
+        # Maximize each window
+        send_command(
+            {
+                "Action": {
+                    "SetWindowWidth": {
+                        "id": window["id"],
+                        "change": {"SetProportion": 100},
+                    }
+                }
+            }
+        )
 
 
 def main():
@@ -313,6 +332,12 @@ def main():
         help="The gaps from the niri config so that the window sizes are correctly adjusted.",
     )
 
+    # Maximize all windows
+    _ = sub_parsers.add_parser(
+        "maximize-windows",
+        help="Maximize all windows on the current workspace.",
+    )
+
     args = parser.parse_args(args=(sys.argv[1:] or ["--help"]))
 
     match args.command:
@@ -322,3 +347,5 @@ def main():
             cycle_workspace(args.direction, args.skip_next_empty)
         case "fit-all-windows":
             fit_all_windows(args.gaps)
+        case "maximize-windows":
+            maximize_windows()
