@@ -23,18 +23,18 @@ def read_lines(client: socket) -> Iterator[bytearray]:
     """Read from niri socket until newline."""
     buffer = bytearray()
 
-    # Waiting until the buffer ends with a newline.
-    while not buffer.endswith(b"\n"):
+    while True:
         if chunk := client.recv(1024):
             buffer.extend(chunk)
         else:
             break
 
-    # Splitting messages captured in the buffer, each separated by \n,
-    # therefore splitting and yielding line by line
-    for line in buffer.split(b"\n"):
-        if line:
-            yield line
+        # Splitting messages captured in the buffer, each separated by \n,
+        # therefore splitting and yielding line by line
+        *complete, buffer = buffer.split(b"\n")
+        for line in complete:
+            if line:
+                yield line
 
 
 @contextmanager
