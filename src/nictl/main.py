@@ -74,12 +74,16 @@ def spawn_or_focus(app_id: str, cmd: str) -> None:
     """Check if the app is already running, then focus it, otherwise run the supplied command."""
 
     focused_window = send_command("FocusedWindow")
-    focused_window_app_id = focused_window.get("app_id") if focused_window else None
+    focused_window_app_id = (
+        focused_window.get("app_id") if focused_window else None
+    )
 
     windows = send_command("Windows")
 
     window_id = [
-        window["id"] for window in windows if window["app_id"].lower() in app_id.lower()
+        window["id"]
+        for window in windows
+        if window["app_id"].lower() in app_id.lower()
     ]
     if window_id:
         if focused_window_app_id == app_id:
@@ -93,9 +97,13 @@ def spawn_or_focus(app_id: str, cmd: str) -> None:
 
 def occupied_workspaces() -> list[int]:
     windows = send_command("Windows")
-    windows_workspace_id = list(set([window.get("workspace_id") for window in windows]))
+    windows_workspace_id = list(
+        set([window.get("workspace_id") for window in windows])
+    )
     workspaces = send_command("Workspaces")
-    return sorted([ws["idx"] for ws in workspaces if ws["id"] in windows_workspace_id])
+    return sorted(
+        [ws["idx"] for ws in workspaces if ws["id"] in windows_workspace_id]
+    )
 
 
 def focused_workspace() -> int:
@@ -112,7 +120,9 @@ def focused_workspace() -> int:
     return current_workspace
 
 
-def cycle_workspace(direction: Literal["up", "down"], skip_next_empty: bool) -> None:
+def cycle_workspace(
+    direction: Literal["up", "down"], skip_next_empty: bool
+) -> None:
     focused_output = send_command("FocusedOutput")["name"]
 
     workspaces = send_command("Workspaces")
@@ -137,7 +147,9 @@ def cycle_workspace(direction: Literal["up", "down"], skip_next_empty: bool) -> 
             target = (
                 min([w for w in occupied if w > current], default=occupied[0])
                 if step > 0
-                else max([w for w in occupied if w < current], default=occupied[-1])
+                else max(
+                    [w for w in occupied if w < current], default=occupied[-1]
+                )
             )
         else:
             target = current + step
@@ -177,7 +189,12 @@ def windows_on_current_workspace() -> list[dict[str, Any]]:
 
     # The windows on the current workspace, sorted in the order
     return sorted(
-        [window for window in windows if window["workspace_id"] == current_workspace],
+        [
+            window
+            for window in windows
+            if window["workspace_id"] == current_workspace
+            and not window["is_floating"]
+        ],
         key=lambda x: x["layout"]["pos_in_scrolling_layout"],
     )
 
@@ -287,7 +304,9 @@ def main():
         description="Send commands to niri over its socket."
     )
 
-    sub_parsers = parser.add_subparsers(title="Commands", dest="command", required=True)
+    sub_parsers = parser.add_subparsers(
+        title="Commands", dest="command", required=True
+    )
 
     # Spawn or focus
     parser_spawn_or_focus = sub_parsers.add_parser(
