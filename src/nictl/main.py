@@ -112,7 +112,7 @@ def focused_workspace() -> int:
     workspaces = send_command("Workspaces")
 
     current_workspace = next(
-        workspace["idx"]
+        workspace["id"]
         for workspace in workspaces
         if workspace["output"] == focused_output and workspace["is_active"]
     )
